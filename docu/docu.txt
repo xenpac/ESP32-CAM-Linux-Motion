@@ -1,0 +1,22 @@
+This tcpserver for the esp32-cam AI-thinkerboard is using the lwip directly via BSD Socket API.
+esp_http_server is not used.
+
+After reset the bootup will stop for 2 seconds at message "+++LoginEdit+++".
+If you hit the SPACE key at this point you will enter an interactive function to enter/edit Wifi credentials which are saved in NVS (eeprom).
+You obviouly need to be connected with a terminal (putty) to the serial port at 8N1, 115200.
+
+During bootup the red little debugLED will be lit until a successful wifi connection has been established.
+This way you can check, if camera is connected and running.(Led not lit)
+
+The default camera parameters after reset are:  640*480 at reduced 8 frames per second, jpg quality=10.
+
+linux motion:
+i added some sample config files in "linux-motion".
+you can specify a mask file for your camera.
+the fileformat has to be .pgm and shall only contain black and white areas.
+black areas are discarded for motion detection.
+only white areas are being considered.
+
+take a snapshot with your cam, then edit with gimp.
+select  area(s) to be discarded an fill it with black. fill the rest with white.
+Finally file->export as....pgm. done
