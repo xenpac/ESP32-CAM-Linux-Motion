@@ -318,11 +318,7 @@ int http_response(int port, char *req, int connection)
         {
             if (!IsStreaming) //if currently streaming 0 Bytes will be downloaded!
             {
-
-#if CONVERT == 1
-                freeflag=1; // if convert, the jpg buffer must be freed!!
-#endif
-                if (!get_frame(CONVERT,&pb,&len)) len=0;
+                if (!get_frame(0,&pb,&len)) len=0; // get raw image
             }
             else len=0;
             sprintf(response,resp_attach,len);
@@ -335,6 +331,7 @@ int http_response(int port, char *req, int connection)
         {
             if (!IsStreaming)
             {
+				ESP_LOGI(TAG,"Get Still");
 #if CONVERT == 1
                 freeflag=1; // if convert, the jpg buffer must be freed!!
 #endif

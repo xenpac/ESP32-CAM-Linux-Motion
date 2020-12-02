@@ -46,10 +46,12 @@ There is a voltageregulator picking up the 5V and convert it to 3.3V
 needed by the board to operate properly. 
  
 It seems that this regulator is working just "on the edge" with 5V.  
-Raising the powersupply voltage to 5.4V (upto 6 or so volts) gives a much more relyable operation, in my experience!.  
+Raising the powersupply voltage to **5.4V** (upto 6 or so volts) gives a much more relyable operation, in my experience!.  
 (my horizontal stripes were gone;)  
 Ie. some moduls work with 5V, some dont, needing 5.4V+  
 
+The **USB-A connector** into the USB-charger also causes problems.
+If it gets dirty there is a remarkable resistance which causes voltage-drops on current-spikes!
 
 ## Arduino
 I know many folks are using **Arduino IDE**.  

@@ -227,7 +227,7 @@ esp_err_t wifi_handler(void *ctx, system_event_t *event)
 
         if (wifi_status == 3) // try to reconnect 5 times if we lost connection, maybe out of reach
         {
-            if (wifi_retrys < 5)
+            if (wifi_retrys < 5) // reconnect may leave tcpip stack non functional if IPaddress is lost! sooo maybe just reset here.
             {
                 esp_wifi_connect();
                 wifi_retrys++;
