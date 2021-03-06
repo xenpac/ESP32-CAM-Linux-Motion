@@ -80,6 +80,8 @@ void loop() {
 ``` 
  Added sourcefiles as needed to the sketch(no subdirectorys)...however, didnt compile through (but quite a bit!).  
  Maybe you have more luck ?!  
+ PS. i found out that "app_main" is also used in arduino. So double defined.
+ I guess by renaming the camera app_main to ? cam_main... might do the trick ?!
  
 ## Binarys
 For those who do not want to compile anything, i added the binarys to this repo.  
