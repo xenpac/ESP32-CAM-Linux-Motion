@@ -15,6 +15,9 @@ This is a new software for the famous little **esp32-cam** modul optimized for m
 
 A custom tcpserver interacts directly with lwIP via BSD Socket API. No facedetect!.
 
+There is also a new experimetal version using latest IDF-V4.4 here:
+https://github.com/xenpac/esp32-camera-driver
+
 ## Web-Interface
 has been updated.
 - Status line: at top of page shows: NetworkFPS(Netw-Throuput), HardwareFPS(OV2640FPS), CamErrors(Cam/Driver errors).  
