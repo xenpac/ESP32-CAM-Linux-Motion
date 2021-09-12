@@ -6,6 +6,6 @@ On windows there is an exe version    https://github.com/igrr/esptool-ck/release
 
 They both use the same syntax.
 
-The syntax (used by my make flash command) is as follows: (adjust pathnames and tty-port as appropriate)
+To flash goto the binarys directory and copy/paste the commandline below in the terminal: (adjust  tty-port as appropriate)
 
 python tools/esptool.py --chip esp32 --port "/dev/ttyUSB0" --baud 921600 --before "default_reset" --after "hard_reset" write_flash -z --flash_mode "dio" --flash_freq "80m" --flash_size detect 0x1000 bootloader.bin 0x10000 espcam.bin 0x8000 partitions.bin
