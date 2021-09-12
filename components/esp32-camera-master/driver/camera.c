@@ -77,7 +77,7 @@ static const char* TAG = "camera";
 static const char* CAMERA_SENSOR_NVS_KEY = "sensor";
 static const char* CAMERA_PIXFORMAT_NVS_KEY = "pixformat";
 
-extern int IRAM_ATTR HwFrameCnt, CapErrors;
+extern int HwFrameCnt, I2sFrameCnt,DMAerrors,JPGerrors;
 
 
 typedef void (*dma_filter_t)(const dma_elem_t* src, lldesc_t* dma_desc, uint8_t* dst);
@@ -604,7 +604,8 @@ static void IRAM_ATTR signal_dma_buf_received(bool* need_yield)
     {
         if(!s_state->fb->ref)
         {
-            s_state->fb->bad = 1;
+            s_state->fb->bad = 1; // BUFFER QUEUE is full
+			DMAerrors++;
         }
         //ESP_EARLY_LOGW(TAG, "qsf:%d", s_state->dma_received_count);
         //ets_printf("qsf:%d\n", s_state->dma_received_count);
@@ -621,7 +622,7 @@ static void IRAM_ATTR i2s_isr(void* arg)
     if (s_state->config.pixel_format != PIXFORMAT_JPEG
             && s_state->dma_received_count == s_state->height * s_state->dma_per_line)
     {
-        i2s_stop(&need_yield);
+        i2s_stop(&need_yield); // usually never hits
     }
     if (need_yield)
     {
@@ -629,7 +630,7 @@ static void IRAM_ATTR i2s_isr(void* arg)
     }
 }
 
-
+// this int is only used in jpeg!!
 static void IRAM_ATTR vsync_isr(void* arg)
 {
     GPIO.status1_w1tc.val = GPIO.status1.val;
@@ -641,16 +642,17 @@ static void IRAM_ATTR vsync_isr(void* arg)
         HwFrameCnt++;
         if(s_state->dma_received_count > 0)
         {
-            signal_dma_buf_received(&need_yield);
+            signal_dma_buf_received(&need_yield); // fetch one additional dmabuffer to include partional received inlink without in_done triggered!
             //ets_printf("end_vsync\n");
             if(s_state->dma_filtered_count > 1 || s_state->fb->bad || s_state->config.fb_count > 1)
             {
-                i2s_stop(&need_yield);
+                i2s_stop(&need_yield);  //always hits
             }
             //ets_printf("vs\n");
         }
         if(s_state->config.fb_count > 1 || s_state->dma_filtered_count < 2)
         {
+			// always hits, thus we are always resetting i2s after every frame!!tomk
             I2S0.conf.rx_start = 0;
             I2S0.in_link.start = 0;
             I2S0.int_clr.val = I2S0.int_raw.val;
@@ -747,6 +749,7 @@ static void IRAM_ATTR camera_fb_done()
 
 static void IRAM_ATTR dma_finish_frame()
 {
+	int flag=0;
     size_t buf_len = s_state->width * s_state->fb_bytes_per_pixel / s_state->dma_per_line;
 
     if(!s_state->fb->ref)
@@ -768,30 +771,36 @@ static void IRAM_ATTR dma_finish_frame()
             s_state->fb->len = s_state->dma_filtered_count * buf_len;
             if(s_state->fb->len)
             {
-                //find the end marker for JPEG. Data after that can be discarded
+                //find the end marker for JPEG. Data after that can be discarded. tomk
                 if(s_state->fb->format == PIXFORMAT_JPEG)
                 {
-                    uint8_t * dptr = &s_state->fb->buf[s_state->fb->len - 1];
-                    while(dptr > s_state->fb->buf)
+                    uint8_t * dptr = &s_state->fb->buf[s_state->fb->len - 1]; // goto last byte
+                    while(dptr > s_state->fb->buf) // go backwards
                     {
                         if(dptr[0] == 0xFF && dptr[1] == 0xD9 && dptr[2] == 0x00 && dptr[3] == 0x00)
-                        {
-                            dptr += 2;
-                            s_state->fb->len = dptr - s_state->fb->buf;
-                            if((s_state->fb->len & 0x1FF) == 0)
+                        { // if found endmarker
+                            dptr += 2; //goto after 0xD9
+                            s_state->fb->len = dptr - s_state->fb->buf;  //adjust length
+                            if((s_state->fb->len & 0x1FF) == 0) // if last 9bits are 0, 512 boundary, tomk
+                            {
+                                s_state->fb->len += 1; //add 1
+                            }
+                            if((s_state->fb->len % 100) == 0) // if bytecount is divby 100, add 1
                             {
                                 s_state->fb->len += 1;
                             }
-                            if((s_state->fb->len % 100) == 0)
-                            {
-                                s_state->fb->len += 1;
-                            }
+							flag=1;
                             break;
                         }
                         dptr--;
                     }
+					if (!flag)
+					{
+						JPGerrors++; // bad, jpg endmarker not found
+					}
                 }
                 //send out the frame
+				I2sFrameCnt++;
                 camera_fb_done();
             }
             else if(s_state->config.fb_count == 1)
@@ -836,15 +845,15 @@ static void IRAM_ATTR dma_filter_buffer(size_t buf_idx)
     //first frame buffer
     if(!s_state->dma_filtered_count)
     {
-        //check for correct JPEG header
+        //check for correct JPEG header. tomk
         if(s_state->sensor.pixformat == PIXFORMAT_JPEG)
         {
             uint32_t sig = *((uint32_t *)s_state->fb->buf) & 0xFFFFFF;
             if(sig != 0xffd8ff)
             {
-                ets_printf("bh 0x%08x\n", sig); // bad/incomplete frames
-                s_state->fb->bad = 1;
-                CapErrors++;
+               // ets_printf("bh 0x%08x\n", sig); 
+                s_state->fb->bad = 1; // jpg startmarker not found
+                JPGerrors++;
                 return;
             }
         }
@@ -868,7 +877,7 @@ static void IRAM_ATTR dma_filter_task(void *pvParameters)
         size_t buf_idx;
         if(xQueueReceive(s_state->data_ready, &buf_idx, portMAX_DELAY) == pdTRUE)
         {
-            if (buf_idx == SIZE_MAX)
+            if (buf_idx == SIZE_MAX) // if i2sstop was called , SIZE_MAX indicating last dma buffer received, tomk
             {
                 //this is the end of the frame
                 dma_finish_frame();
@@ -1224,10 +1233,8 @@ esp_err_t camera_init(const camera_config_t* config)
     {
 #if CONFIG_OV2640_SUPPORT
     case OV2640_PID:
-        if (frame_size > FRAMESIZE_UXGA)
-        {
+
             frame_size = FRAMESIZE_UXGA;
-        }
         break;
 #endif
 #if CONFIG_OV7725_SUPPORT
@@ -1362,10 +1369,13 @@ esp_err_t camera_init(const camera_config_t* config)
         goto fail;
     }
 
-    ESP_LOGD(TAG, "in_bpp: %d, fb_bpp: %d, fb_size: %d, mode: %d, width: %d height: %d",
+    /*ESP_LOGD(TAG, "in_bpp: %d, fb_bpp: %d, fb_size: %d, mode: %d, width: %d height: %d",
              s_state->in_bytes_per_pixel, s_state->fb_bytes_per_pixel,
              s_state->fb_size, s_state->sampling_mode,
              s_state->width, s_state->height);
+			 */
+			 
+	ESP_LOGI(TAG, "size: %d %d %d",s_state->width, s_state->height,s_state->fb_size);
 
     i2s_init();
 

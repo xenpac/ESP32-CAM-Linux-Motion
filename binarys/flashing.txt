@@ -8,9 +8,4 @@ They both use the same syntax.
 
 The syntax (used by my make flash command) is as follows: (adjust pathnames and tty-port as appropriate)
 
-python path/esptool.py
---chip esp32 --port "/dev/ttyUSB0" --baud 921600 --before "default_reset" --after "hard_reset"
-write_flash -z --flash_mode "dio" --flash_freq "80m" --flash_size detect
-0x1000 path/bootloader.bin
-0x10000 path/espcam.bin
-0x8000 path/partitions.bin
+python tools/esptool.py --chip esp32 --port "/dev/ttyUSB0" --baud 921600 --before "default_reset" --after "hard_reset" write_flash -z --flash_mode "dio" --flash_freq "80m" --flash_size detect 0x1000 bootloader.bin 0x10000 espcam.bin 0x8000 partitions.bin

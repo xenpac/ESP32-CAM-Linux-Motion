@@ -5,7 +5,6 @@ set(COMPONENT_REQUIRES
     nvs_flash
     )
 
-set(COMPONENT_EMBED_FILES
-        "www/index_ov2640.html.gz"
+set(COMPONENT_EMBED_FILES "www/index_ov2640.html.gz")
 
 register_component()

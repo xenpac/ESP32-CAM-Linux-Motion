@@ -2,10 +2,8 @@ set(COMPONENT_SRCS
   driver/camera.c
   driver/sccb.c
   driver/sensor.c
-  driver/twi.c
   driver/xclk.c
   sensors/ov2640.c
-  conversions/to_jpg.cpp
   )
 
 set(COMPONENT_ADD_INCLUDEDIRS

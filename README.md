@@ -1,7 +1,7 @@
 # Camera Webserver ESP32-CAM AI-THINKER Board with LED control Version 2
 
-- stable WebCam for linux-motion (OV2640 only)
-- ESP-IDF V3.3.1 LTS project, C code.
+- stable IP-WebCam for linux-motion (OV2640 only)
+- ESP-IDF V4.4 project, C code.
 
 ![modul](docu/esp32-cam.jpg)
 
@@ -15,9 +15,15 @@ This is a new software for the famous little **esp32-cam** modul optimized for m
 
 A custom tcpserver interacts directly with lwIP via BSD Socket API. No facedetect!.
 
+## ++UPDATE++
+- Updated software to IDF version 4.4
+- bugfix: removed wifi retry counter for stable reconnect
+- webpage: status: added **UpTime(hrs)**(to check for last reset/connection loss)  and **RSSI signal strength**(to monitor wifi quality)
+- Compile: **idf.py build**, then **idf.py flash monitor**.    Also make and make flash monitor could be used.
+
 ## Web-Interface
 has been updated.
-- Status line: at top of page shows: NetworkFPS(Netw-Throuput), HardwareFPS(OV2640FPS), CamErrors(Cam/Driver errors).  
+- Status line: at top of page shows: NetworkFPS(Netw-Throuput), CameraFPS(OV2640FPS), I2sFPS(driver) QUEerrors(driver), JPGerros(I2S), UpTime, RSSI.  
   via GET Button
 - nightmode: long exposure times, auto-framerate 3 to 25 fps depending on light. AEC and AGC must be ON!!!
 - streamspeed: change between slow(default)(better exposure in dark) and full(full speed)
@@ -27,13 +33,13 @@ has been updated.
 
 ![menue](docu/menue.jpg)
 
-## Web interfaces via http://
+## IP interfaces via http://
 - camIP = loads the Webpage as above for interactive camera control
 - camIP:81/stream = streaming interface (optional streamlight)
 - camIP/capture = capture/save still image (optional flashlight)
-- camIP/download = download raw image directly from camera.(for debug)  
+- camIP/download = download image directly from camera.(optional flashlight) 
 
-The camera may be configured without webinterface if appropriate control/json strings are send.  
+The camera may be configured without webpage if appropriate control/json strings are send.  
 Settings are always feedback via serial interface if connected.
 
 
@@ -53,6 +59,8 @@ Ie. some moduls work with 5V, some dont, needing 5.4V+
 The **USB-A connector** into the USB-charger also causes problems.
 If it gets dirty there is a remarkable resistance which causes voltage-drops on current-spikes!
 
+The HighPower LED gets very hot!!
+
 ## Arduino
 I know many folks are using **Arduino IDE**.  
 
@@ -66,12 +74,12 @@ select "AI-Thinker esp32-cam" as board.
 I tried it, using a sketch like this:
 ```
 extern "C"{
-void app_main(void); // main camera function
+void app_main_camera(void); // main camera function renamed to avoid conflict with arduino app_main()
 }
 
 void setup() {
   // put your setup code here, to run once:
-app_main(); // this shall never return! cameras main function.
+app_main_camera(); // this shall never return! cameras main function.
 }
 
 void loop() {

@@ -1,5 +1,5 @@
 
-/* esp32-cam camera application.
+/* esp32-cam camera application jpeg. sensor = ov2640
 
 This file contains:
 - main camera application
@@ -7,127 +7,73 @@ This file contains:
 - wifi ssid/password storage in NVS flash memory
 - wifi credentials configuration via serial interface on startup.
 
-This software is based on esp-idf version 3.3.1, the long term support version until 2022....i love it:-)
-So please use the LTS version! to be compatible!
-This uses the make utility! old style.
-
-esp32 flash memmap:
-0x1000 = 2ndstage bootloader
-0x8000 = partitiontable
-0x10000= application
-
-esptool.py commandline for flashing binarys:
-python esp-idf/components/esptool_py/esptool/esptool.py
---chip esp32 --port "/dev/ttyUSB0" --baud 921600 --before "default_reset" --after "hard_reset"
-write_flash -z --flash_mode "dio" --flash_freq "80m" --flash_size detect
-0x1000 espcam2640/build/bootloader/bootloader.bin
-0x10000 espcam2640/build/espcam.bin
-0x8000 espcam2640/build/partitions.bin
-
-
-september 2020, Thomas Krueger, Hofgeismar Germany (all rights reserved)
+This software is based on esp-idf version 4.3, 4.4
+september 2021, Thomas Krueger, Hofgeismar Germany (all rights reserved)
 */
 
-#include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
-#include "freertos/semphr.h"
-#include "esp_err.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
-#include "esp_event_loop.h"
+#include "esp_event.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
-#include "nvs.h"
-#include "sdkconfig.h"
 #include "lwip/err.h"
 #include "lwip/sys.h"
-#include "esp_http_server.h"
+#include "driver/gpio.h"
 #include "esp_camera.h"
-#include "esp_eth.h"
-#include "tcpip_adapter.h"
-#include "eth_phy/phy_lan8720.h"
-
-#include "soc/i2s_reg.h"
-#include "soc/i2s_struct.h"
-#include "soc/io_mux_reg.h"
-
-
-//camera pin config esp32-cam
-//esp32-cam PIN Map
-#define CAM_PIN_PWDN    32
-#define CAM_PIN_RESET   -1
-#define CAM_PIN_XCLK    0
-#define CAM_PIN_SIOD    26
-#define CAM_PIN_SIOC    27
-
-#define CAM_PIN_D7      35
-#define CAM_PIN_D6      34
-#define CAM_PIN_D5      39
-#define CAM_PIN_D4      36
-#define CAM_PIN_D3      21
-#define CAM_PIN_D2      19
-#define CAM_PIN_D1      18
-#define CAM_PIN_D0      5
-#define CAM_PIN_VSYNC   25
-#define CAM_PIN_HSYNC   23
-#define CAM_PIN_PCLK    22
 
 // the camera config structure to be used with the camera driver
 static camera_config_t camera_config =
 {
-    .pin_pwdn  = CAM_PIN_PWDN,
-    .pin_reset = CAM_PIN_RESET,
-    .pin_xclk = CAM_PIN_XCLK,
-    .pin_sscb_sda = CAM_PIN_SIOD,
-    .pin_sscb_scl = CAM_PIN_SIOC,
+    .pin_pwdn  = 32,
+    .pin_reset = -1,
+    .pin_xclk = 0,
+    .pin_sscb_sda = 26,
+    .pin_sscb_scl = 27,
 
-    .pin_d7 = CAM_PIN_D7,
-    .pin_d6 = CAM_PIN_D6,
-    .pin_d5 = CAM_PIN_D5,
-    .pin_d4 = CAM_PIN_D4,
-    .pin_d3 = CAM_PIN_D3,
-    .pin_d2 = CAM_PIN_D2,
-    .pin_d1 = CAM_PIN_D1,
-    .pin_d0 = CAM_PIN_D0,
-    .pin_vsync = CAM_PIN_VSYNC,
-    .pin_href = CAM_PIN_HSYNC,
-    .pin_pclk = CAM_PIN_PCLK,
+    .pin_d7 = 35,
+    .pin_d6 = 34,
+    .pin_d5 = 39,
+    .pin_d4 = 36,
+    .pin_d3 = 21,
+    .pin_d2 = 19,
+    .pin_d1 = 18,
+    .pin_d0 = 5,
+    .pin_vsync = 25,
+    .pin_href = 23,
+    .pin_pclk = 22,
 
     //XCLK 20MHz(or 10MHz for OV2640 double FPS by setting pll x 4)
     .xclk_freq_hz = 20000000,
 //   .ledc_timer = LEDC_TIMER_0,  // not using LED dimming
 //   .ledc_channel = LEDC_CHANNEL_0,
 
-    .pixel_format = PIXFORMAT_JPEG,//YUV422,GRAYSCALE,RGB565,JPEG       this is the output format!!!!!!!!!!!!
+    .pixel_format = PIXFORMAT_JPEG,//YUV422,GRAYSCALE,RGB565,JPEG       this is the cams output format!!!!!!!!!!!!
     .frame_size = FRAMESIZE_UXGA,//first init with largest framesize to get biggest framebuffers in camera driver
 
     .jpeg_quality = 10, //0-63 lower number means higher quality
     .fb_count = 2 //number of framebuffers to use for capturing, if > 1, i2s runs in continuous mode.
 };
 
-// you may specify your APs credential here (or from sysconfig) being hardcoded !! ?? if you want that.Otherwise just edit logintable via serial on startup!
-//#define CONFIG_ESP_WIFI_SSID "dummy"
-//#define CONFIG_ESP_WIFI_PASSWORD "bunny"
 
 static const char *TAG = "espcam";
-uint8_t wifi_retrys = 0;
+
 /* wifi_status:
 0=not initialized;
 1= normal run, we are connected;
 2=disconnected due to invalid ssid/pass;
-3=disconnected to to connection loss
+3=disconnected due to connection loss
 4=undefined, we issued a connect() and are waiting for an event to happen
 */
 uint8_t wifi_status=0;
 
-
 //protos:
 void camserver(void);
 
-esp_err_t wifi_handler(void *ctx, system_event_t *event);
+
 void wifi_connect(char *ssid, char *passwd);
 int wifi_try(char *ssid, char *passwd);
 int wifi_startup(void);
@@ -140,8 +86,6 @@ void putcc(char c);
 char getcc(void);
 void getss(char *buf);
 void putss(const char *ps);
-
-
 
 
 
@@ -170,22 +114,22 @@ void app_main(void)
     {
         ESP_LOGE(TAG,"Boot: camera init failed....Restarting System now...............>>>>>>\n");
         fflush(stdout);
-        esp_restart();
+        esp_restart(); // try to resolve by doing a reset
     }
 
 // set framesize to standard VGA
     sensor_t * s = esp_camera_sensor_get();
     s->set_framesize(s, (framesize_t)FRAMESIZE_VGA);
 
-//    vTaskDelay(1000/portTICK_PERIOD_MS);  // wait a little before starting wifi to get the debug print done
 
     if (wifi_startup() == 0) //wifi takes a bit with its logging output...
     {
         ESP_LOGE(TAG, "Could not find a known Wifi Network!!!");
         vTaskDelay(10000/portTICK_PERIOD_MS);
-        esp_restart(); // keep trying by reseting the system
+        esp_restart(); // keep trying to find a known wifi router by reseting the system
     }
-    gpio_set_level(33, 1); // turn debug led off, boot done
+
+    gpio_set_level(33, 1); // turn debug led off, boot done, we are connected
 
     camserver(); //this task becomes the webserver for control
 
@@ -194,75 +138,76 @@ void app_main(void)
 
 
 
-//event handler wifi. this function executes in a different task!
-esp_err_t wifi_handler(void *ctx, system_event_t *event)
+//event handler wifi new. this function executes in a different task!
+void wifi_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
 {
-    switch(event->event_id)
+    wifi_event_sta_disconnected_t* disconnect = event_data;
+
+    if (event_base == WIFI_EVENT)
     {
-    case SYSTEM_EVENT_STA_START: // we entered STA wifi mode
-        esp_wifi_connect(); // start scanning...and connect...or sta_disconnect
-        break;
-    case SYSTEM_EVENT_STA_GOT_IP:  // if connect, we got ip
-        ESP_LOGI(TAG, "+++CONNECTED+++: got ip:%s",ip4addr_ntoa(&event->event_info.got_ip.ip_info.ip));
-        wifi_retrys = 0;
-        wifi_status=1; //online
-        break;
-    case SYSTEM_EVENT_STA_DISCONNECTED:
-        ESP_LOGI(TAG,"STA_DISCONNECTED,reason:%d\n", event->event_info.disconnected.reason);
-
-        if (wifi_status != 3)
+        switch(event_id)
         {
-            switch (event->event_info.disconnected.reason)
+        case WIFI_EVENT_STA_START: // we entered STA wifi mode
+            esp_wifi_connect(); // start scanning...and connect...or sta_disconnect
+            break;
+        case WIFI_EVENT_STA_DISCONNECTED:
+            ESP_LOGI(TAG,"STA_DISCONNECTED,reason:%d\n",disconnect->reason);
+            if (wifi_status != 3)
             {
-            case 201:	//15=invalid password or not present; 201=ssid not found
-            case 15:	// if ssid is 0, we will not get here as wifi will just scan.
-                wifi_status=2; // we disconnected due to invalid ssid or passwd
-                break;
-            default:
-                wifi_status=3; // we lost connection to AP, lets retry. or esp_wifi_disconnect() was called
-                break;
+                switch (disconnect->reason)
+                {
 
-            }
-        }
+                case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT: // 15
+                case WIFI_REASON_NO_AP_FOUND: //201
+                //15=invalid password or not present; 201=ssid not found
+				// if ssid is 0, we will not get here as wifi will just scan.
 
-        if (wifi_status == 3) // try to reconnect 5 times if we lost connection, maybe out of reach
-        {
-            if (wifi_retrys < 5) // reconnect may leave tcpip stack non functional if IPaddress is lost! sooo maybe just reset here.
-            {
-                esp_wifi_connect();
-                wifi_retrys++;
-                ESP_LOGI(TAG,"trying to reconnect...");
+                    wifi_status=2; // we disconnected due to invalid ssid or passwd...try another ssid/passwd
+                    break;
+                default:
+                    wifi_status=3; // we were connected but lost connection to AP, giving up reset
+                    break;
+
+                }
             }
-            else
+
+            if (wifi_status == 3) // lost connection. just reset, any reconnect upsets the lwip stack
             {
+            ESP_LOGI(TAG,"-- lost connection, restarting system ...");
                 vTaskDelay(10000/portTICK_PERIOD_MS);
                 esp_restart(); // we just reset the board as the TCPserver will likely hang. also we can connect to different AP then.
+
             }
 
+            break;
+        default:
+            break;
         }
-
-        break;
-    default:
-        //ESP_LOGI(TAG,"got unknown wifi event:%d!!",event->event_id); // some events are happening, nothing to worry.
-        break;
     }
-    return ESP_OK;
+    else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
+    {
+        // we got ip
+        ESP_LOGI(TAG, "+++CONNECTED+++: got ip:" IPSTR , IP2STR(&((ip_event_got_ip_t*)(event_data))->ip_info.ip));
+        wifi_status=1; //online
+    }
+
 }
 
-// wifi connect to router with credentials supplied in config
+// wifi connect to router with credentials supplied in nvs table
 void wifi_connect(char *ssid, char *passwd)
 {
+    esp_event_handler_instance_t instance_any_id;
+    esp_event_handler_instance_t instance_got_ip;
     wifi_config_t wifi_config;
     int ret;
 
-    // from here, we set the APs credentials and start the connection process.
-    // to change ssid/passwd and reconnect
+    // from here, we set the given APs credentials and start the connection process.
     memset(&wifi_config, 0, sizeof(wifi_config_t));
     snprintf((char*)wifi_config.sta.ssid, 32, "%s", ssid);
     snprintf((char*)wifi_config.sta.password, 64, "%s", passwd);
     ESP_LOGI(TAG, "...connecting to AP SSID:%s PASSWD:%s",ssid, passwd);
 
-    if (wifi_status) // wifi is already running, so here we just set the changed ssid/passwd parameters and (re)connect to that AP
+    if (wifi_status) // wifi task is already running, so here we just set the changed ssid/passwd parameters and (re)connect to that AP
     {
         // we assume we are disconnected at this stage!
         if (esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config)  != ESP_OK) // set ssid and passwd of wanted AccessPoint to connect to
@@ -281,15 +226,20 @@ void wifi_connect(char *ssid, char *passwd)
         return;
     }
 
-// do first time wifi init stuff:
+// do first time wifi init stuff to start the wifi task:
 
-    if (esp_event_loop_init(wifi_handler, NULL) != ESP_OK) // start the event loop task
+
+// Setup the Wifi eventloop and define 2 events for "got_ip" and "other_stuff"
+    if (esp_event_loop_create_default() != ESP_OK) // start the event loop task
     {
         ret=1;
         goto wifierr;
     }
+    esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_handler, NULL, &instance_any_id);
+    esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_handler, NULL, &instance_got_ip);
 
-    tcpip_adapter_init(); // init lwIP/TCPIP stack. from 4.1 its esp_netif_init().
+    esp_netif_init(); // init lwIP/TCPIP stack. from 4.1 its esp_netif_init().
+    esp_netif_create_default_wifi_sta(); // create default station context
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     if (esp_wifi_init(&cfg) != ESP_OK) // WiFi control structure, RX/TX buffer, WiFi NVS structure etc, start WiFi task.
@@ -314,7 +264,7 @@ void wifi_connect(char *ssid, char *passwd)
         goto wifierr;
     }
     esp_wifi_set_ps(WIFI_PS_NONE); // disable powersave. this will make ping go much faster: DEFAULT POWERMODE IS.WIFI_PS_MIN_MODEM
-    wifi_status=4; //undefined
+    wifi_status=4; //undefined. event_handler will set the correct status
     return;
 wifierr:
     ESP_LOGE(TAG, "Wifi connect error : %d",ret);
@@ -332,10 +282,10 @@ int wifi_try(char *ssid, char *passwd)
     count=100; // 10 sec timeout
 
     wifi_connect(ssid,passwd);
-    while (count--) //try for 1 secs
+    while (count--) //try for 10 secs
     {
         vTaskDelay(100/portTICK_PERIOD_MS);
-        switch (wifi_status)
+        switch (wifi_status) // did event_handler set new status?
         {
         case 1:
             return 1; //online
@@ -349,22 +299,23 @@ int wifi_try(char *ssid, char *passwd)
     return 0;
 }
 
-/* WIFI login credentials saved in NVS:
+/* wifi_startup
+This is the main function to connect to a wifi accesspoint.
+
+uses WIFI login credentials saved in NVS:
 
 The NVS-interface is similar to operating files on a computer:
 open the file (nvs_open), write a file (nvs_set_xxx), save document(nvs_commit), close the file (nvs_close)
 open the file (nvs_open), reading the file (nvs_get_xxx), close the file (nvs_close)
 
 This function reads a table of ssid_name/password pairs from nvs.
-"lastindex"  will supply its logindata to wifi_connect, as its most likely to be used again.
+"lastindex"  will supply lastused logindata tableindex, as its most likely to be used again.
 else or on fail, it will interate through all stored name/passwd entrys until successfull wifi connect happens, and store its index in "lastindex".
 
-if all fail, it will supply the name/passwd from the config data.
-if that fails too, it will remain in a loop, blinking the onboard statusLED (indicating NoWifiConnect).
+if all fail,  it will remain in a loop, with onboard statusLED on (indicating NoWifiConnect).
 The user must then update the logintable via serial interface.
 
 exit: 0=fail,1=ok, wifi is up
-on fail, we just run without wifi.?!
 */
 #define FILENAME "LoginData"
 #define DATANAME "LoginTab"
@@ -374,9 +325,9 @@ on fail, we just run without wifi.?!
 struct logintable
 {
     int lastindex; // range: 0 to n-1
-    // 10 entrys of name/passwd Login-pairs of max length 19 each. (last char is 0-terminator)
-    char name[nentrys][nlength]; //array of 10 names at 20chars length
-    char pass[nentrys][nlength]; // array of 10 passwds at 20chars length
+    // 10 entrys of name/passwd Login-pairs of max nlength each. (last char is 0-terminator)
+    char name[nentrys][nlength]; //array of 10 names at nlength
+    char pass[nentrys][nlength]; // array of 10 passwds at nlength
 };
 
 int wifi_startup(void)
@@ -442,16 +393,6 @@ int wifi_startup(void)
     ret = 0;// we could not connect the wifi from the table and give up here!
 
     // all entrys failed, now try the name/pass given by the configuration or sourcecode, if there
-
-#ifdef 	CONFIG_ESP_WIFI_SSID
-    if (strlen(CONFIG_ESP_WIFI_SSID))
-    {
-        ESP_LOGI(TAG, "trying to connect to hardcoded ssid");
-
-        if (wifi_try(CONFIG_ESP_WIFI_SSID, CONFIG_ESP_WIFI_PASSWORD))
-            ret = 1;
-    }
-#endif
 
     goto doreturn;
 

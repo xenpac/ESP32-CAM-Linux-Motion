@@ -1,8 +1,8 @@
-/* alternate tcp server for camera application
+/* tcp server for jpeg camera application
 
-esp32-cam alternate TCP server using lwip directly via BSD Socket API.
-To be used for linux motion surveillance applications or similar. NOT for face recoqnition!
-OV2640 only!
+esp32-cam TCP server using lwip directly via BSD Socket API.
+
+OV2640 using jpeg only!
 
 This file contains:
 - camcontrol webserver
@@ -20,9 +20,6 @@ NOTES: esp32-cam 5V supply should be increased to min. 5.4V (upto 6V) for stable
 september 2020, Thomas Krueger, Hofgeismar Germany (all rights reserved)
 */
 
-
-
-#include <stdio.h>
 #include <string.h>
 #include <sys/param.h>
 #include "freertos/FreeRTOS.h"
@@ -32,18 +29,19 @@ september 2020, Thomas Krueger, Hofgeismar Germany (all rights reserved)
 #include "lwip/err.h"
 #include "lwip/sockets.h"
 #include "lwip/sys.h"
+#include "esp_wifi.h"
 #include <lwip/netdb.h>
-
+#include "driver/gpio.h"
 #include "esp_camera.h"
-#include "img_converters.h"
 #include "esp_log.h"
+
 
 //protos:
 void streamtask(void *param);
 int tcpserver(int port);
 int http_response(int port, char *req, int connection);
-int http_stream(int connection, int convert);
-int get_frame(int convert, uint8_t **buf, size_t *len);
+int http_stream(int connection);
+int get_frame(uint8_t **buf, size_t *len);
 static uint16_t set_register(char *uri);
 static int set_control(char *uri);
 static int get_camstatus(void);
@@ -52,33 +50,24 @@ void stream_speed(int full);
 void night_mode(int on);
 
 //globals:
-camera_fb_t *fb=NULL;
+camera_fb_t *fb=NULL;					 
 char iobuf[1024]; // for control processing
 int flashlight, streamlight, streamspeed, nightmode, IsStreaming;
 
 //framerate stuff
 TimerHandle_t tmr;
 void timerCallBack( TimerHandle_t xTimer );
-int NetFPS,HwFPS, NetFrameCnt, resetflag=0;
-int IRAM_ATTR HwFrameCnt, CapErrors; // updated in camera.c, line 582
 
+int NetFPS,HwFPS, I2sFPS, NetFrameCnt, resetflag=0;
+int HwFrameCnt, I2sFrameCnt,DMAerrors,JPGerrors;
 
+int uptime; // in seconds
+int rssi;
 
 static const char *TAG = "tcpserver";
 
-/* converting an image to jpg option:
-if your camera is producing a jpg output, you do not need a jpg conversion.
-In this case you get the fastest fps possible of your camera:
-#define CONVERT 0
 
-if your camera is producing an image other that jpg, like yuv422, rbg888....you need to activate the jpg conversion.
-This will result in a slower framerate of ca. 5fps (due to calculation processing), but is needed to transfer to the webpage which only undestands jpg formatted picture data!!
-Then define:
-#define CONVERT 1
-*/
-#define CONVERT 0
-
-/*
+/* server main function.
 starts a task for the streamserver on port 81
 then goes into control server on port 80 for camera control
 */
@@ -103,13 +92,13 @@ void camserver(void)
 // set starting streamspeed to slow=9fps(=1Mbit-stream at 640*480) for motion to not overload the wifi network	with 4 cameras
     stream_speed(0);
 
-
-    if (!xTaskCreatePinnedToCore(&streamtask, "streamserver", 8192, NULL, tskIDLE_PRIORITY+5, &servertask, 1)) // extra streaming task on port 81
+// start streaming task on port 81
+    if (!xTaskCreatePinnedToCore(&streamtask, "streamserver", 8192, NULL, tskIDLE_PRIORITY+5, &servertask, 1))
     {
         ESP_LOGE(TAG, "***Failed to create stream servertask task");
     }
 
-    tcpserver(80); // server on port 80 to serve camera controls and stills
+    tcpserver(80); // this task becomes the server on port 80 to serve camera controls and stills
 
 // we should never get here!
     xTimerDelete( tmr,0 );
@@ -121,22 +110,23 @@ void streamtask(void *param)
     tcpserver(81);
 }
 
-// main for the tcp webserver custom. This may be a task!
+//  tcp webserver. This may be a task!
 int tcpserver(int port)
 {
     char request[400];
     int serverSocket, clientConn, ret,cnt=0;
+    //setup the socket address struct:
     struct sockaddr_in IpAddress;  // this is an overlay for the struct sockaddr, that eases the portnumber entry.ie. overlays char sa_data[14] with WORD port, ULONG address
     IpAddress.sin_family = AF_INET;
-    IpAddress.sin_port = htons(port); // the port to listen on   **************    this Port ***********************************
-    IpAddress.sin_addr.s_addr = INADDR_ANY;//inet_addr("192.168.1.11"); INADDR_ANY, if you dont know it
+    IpAddress.sin_port = htons(port); // the port to listen on   !!
+    IpAddress.sin_addr.s_addr = INADDR_ANY;// INADDR_ANY, server gets IP of the machine its running on.(see bind)
     socklen_t socklen = sizeof(IpAddress);
 
     // open internet socket/endpoint for HTTP communication. return file handle or -1=error
     serverSocket = socket(
                        AF_INET,      // Domain: IPv4 Internet protocols
                        SOCK_STREAM,  // Communication-Type:  SOCK_STREAM=TCP; SOCK_DGRAM=UDP
-                       IPPROTO_TCP            // was 0: Protocol: 0=IP,internet protocol, pseudo protocol number.TCP and UDP
+                       IPPROTO_TCP   // select TCP.   (was 0: Protocol: 0=IP,internet protocol, pseudo protocol number.TCP and UDP)
                    );
     if (serverSocket < 0)
     {
@@ -145,8 +135,8 @@ int tcpserver(int port)
     }
 
 
-    // assign a specific internet address to the socket. return 0=OK, -1=error
-    // normally the local loopback address is assigned. The Port is the one you opened on your router for the machines local LAN address.
+    // assign a specific internet address and port to the socket using sockaddr-struct from above. return 0=OK, -1=error
+    // normally the local loopback address is assigned(0.0.0.0).
     ret=bind(serverSocket, (struct sockaddr *) &IpAddress, socklen );
     if (ret)
     {
@@ -165,7 +155,7 @@ int tcpserver(int port)
 
     ESP_LOGI(TAG,"Server started on:%s:%u    running on CPUCore:%d", inet_ntoa(IpAddress.sin_addr),ntohs(IpAddress.sin_port),xPortGetCoreID() );
 
-    // wait for connection. We only support 5 connection requests at a time. See listen() above
+    // wait for connection. We only support 5 connection requests waiting at a time. See listen() above
     // while there are connection requests in the input queue of the socket, process then.
     while(1)
     {
@@ -184,7 +174,7 @@ int tcpserver(int port)
                 //printf("read failed!\n");
                 break; // connection lost.  a 0 indicates an orderly disconnect by client; -1 some error occured.
             }
-            request[ret]=0;
+            request[ret]=0; // invalidate last request string
             //printf("\n>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Got:\n %sR-EOT\n",request);
 
             // process response here.....
@@ -215,7 +205,8 @@ exit: 1= keep connection; 0=drop connection!
 */
 const char *resp_index="HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %d\r\nContent-Encoding: gzip\r\n\r\n";
 const char *resp_basic="HTTP/1.1 %s\r\n\r\n";
-const char *resp_attach="HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=\"frame.raw\"\r\nContent-Length: %d\r\n\r\n";
+// changed to jpg as we only have jpeg.
+const char *resp_attach="HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=\"frame.jpg\"\r\nContent-Length: %d\r\n\r\n";
 const char *resp_capture="HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\nContent-Disposition: inline; filename=capture.jpg\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
 const char *resp_status="HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
 const char *resp_control="HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %d\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
@@ -233,9 +224,6 @@ int http_response(int port, char *req, int connection)
     char request[10], uri[100];
     int ret,keepalive=1;
     int more=0;
-#if CONVERT == 1
-    int freeflag=0; // if convert, the jpg buffer must be freed!!
-#endif
     uint16_t regval;
     //printf("\n\nLength:%d\n",strlen(req));
     // check for GET: "GET / HTTP/1.1CRLF"
@@ -279,7 +267,6 @@ int http_response(int port, char *req, int connection)
         // set control
         if (!strncmp(uri,"/control",8))
         {
-            //printf("+++++++++++++control\n");
             ret = set_control(uri);
 //        if (ret != 1) goto send404;  webpage freezes if 404 is returned, so dont do it
             sprintf(response,resp_control,0);
@@ -318,9 +305,18 @@ int http_response(int port, char *req, int connection)
         {
             if (!IsStreaming) //if currently streaming 0 Bytes will be downloaded!
             {
-                if (!get_frame(0,&pb,&len)) len=0; // get raw image
+                ESP_LOGI(TAG,"Downloading full cam-img as frame.jpg");
+                if (flashlight)
+                {
+                    gpio_set_level(4, 1); // turn led on
+                    vTaskDelay(400/portTICK_PERIOD_MS);  // wait a little to get camera exposure settle to new light conditions
+                }
+				get_frame(&pb,&len); // skip previous frame, it contains old light settings
+                if (!get_frame(&pb,&len)) len=0; // get raw image
+                gpio_set_level(4, 0); // turn led off
             }
-            else len=0;
+            else
+                len = 0;
             sprintf(response,resp_attach,len);
             goto sendmore;
 
@@ -331,18 +327,15 @@ int http_response(int port, char *req, int connection)
         {
             if (!IsStreaming)
             {
-				ESP_LOGI(TAG,"Get Still");
-#if CONVERT == 1
-                freeflag=1; // if convert, the jpg buffer must be freed!!
-#endif
+                ESP_LOGI(TAG,"Get Still");
+
                 if (flashlight)
                 {
                     gpio_set_level(4, 1); // turn led on
                     vTaskDelay(400/portTICK_PERIOD_MS);  // wait a little to get camera exposure settle to new light conditions
-
                 }
-
-                ret=get_frame(CONVERT,&pb,&len);
+				get_frame(&pb,&len); // skip previous frame, it contains old light settings
+                ret=get_frame(&pb,&len);
 
                 gpio_set_level(4, 0); // turn led off
                 if (!ret) len=0;
@@ -364,7 +357,7 @@ int http_response(int port, char *req, int connection)
     {
         // http stream
         if (!strncmp(uri,"/stream",7))
-            return(http_stream(connection,CONVERT));
+            return(http_stream(connection));
     }
 
 //default, nothing has catched: send 404 not found/supported----this upsets the client as it waits forever,blocks other controls ...maybe just send http ok??!!
@@ -395,11 +388,6 @@ sendresponse:
     {
         //printf("sending data...\n");
         ret = send(connection, pb, len, 0);// this blocks until data is sent
-#if CONVERT == 1
-        if (freeflag) free(pb); // if convert, the jpg buffer must be freed!!
-#endif
-        esp_camera_fb_return(fb); // give back the used framebuffer to the camera driver to be used again
-        fb=NULL; // mark free
         if (ret <= 0) // connection closed. broken connection
             return 0;
         if (ret != len) ESP_LOGE(TAG,"send2, not all bytes sent:%d",ret);
@@ -421,12 +409,10 @@ The content type multipart/x-mixed-replace was developed as part of a technology
 This implements "The Multipart Content-Type" over HTTP Protocol using boundary-identifier.
 This is not to be confused with chunked!!
 The identifier can be any string you like;) must stay the same of corse.
-MJEPG is working, of corse;)
-RAW-YUV results in big data being transmitted, let see. test with firefox...no luck yet.
-- convert = 0=format as of camera; 1= convert to ? jpg or bmp in get_frame
+
 returns 0 = close connection
 */
-int http_stream(int connection, int convert)
+int http_stream(int connection)
 {
     uint8_t *pb;
     size_t len;
@@ -434,9 +420,6 @@ int http_stream(int connection, int convert)
 
     int ret;
 
-    // init camera to VGA resolution on start, we dont want too big picture.
-//	sensor_t *s = esp_camera_sensor_get(); // get the cameras function list
-//	s->set_framesize(s, FRAMESIZE_VGA);
     ESP_LOGI(TAG,"Stream Start....");
 
     ret=send(connection, resp_stream, strlen(resp_stream),0);
@@ -444,12 +427,13 @@ int http_stream(int connection, int convert)
 
     IsStreaming=1;
 
+
     while (1)
     {
         if (streamlight) gpio_set_level(4, 1); // turn led on
         else gpio_set_level(4, 0); // turn led off
 
-        ret=get_frame(convert,&pb,&len);
+        ret=get_frame(&pb,&len);
         if (!ret) // error message is printed in driver if fails
         {
             // something went wrong in the camera/driver, just reset the thing trying to resolve it.
@@ -463,13 +447,10 @@ int http_stream(int connection, int convert)
         ret=send(connection, response, strlen(response),0);
         if (ret <= 0) //connection closed by client
         {
-            if (convert) free(pb);
+
             break;
         }
         ret = send(connection, pb, len, 0);// this blocks until data is sent
-        if (convert) free(pb); // jpg conversion buffer
-        esp_camera_fb_return(fb);
-        fb=NULL;
         NetFrameCnt++; // calc FPS
         if (ret <= 0) break; //connection closed by client
         else if (ret != len) ESP_LOGE(TAG,"sendjpg, not all bytes sent:%d errno:%d",ret,errno);
@@ -484,24 +465,24 @@ int http_stream(int connection, int convert)
 
 
 /*
-get a frame from the camera and optionally convert to jpg
+get a frame from the camera
 uses global pointer to  fb_struct (camera framebuffer)
 entry:
-- convert flag, if 1, convert to jpg. This option shall only be 1, if camera produces non-jpg format like yuv422 (0v7670!)
-- address of pointer to receive the resulting framebuffer address. if convert, its the newly allocated jpg-buffer and must be freed!!
+- address of pointer to receive the resulting framebuffer address.
 - address of len variable receiving the length of framebuffer data.
 exit:
-1=OK, 0=capture or convert failed.
+1=OK, 0=capture  failed.
 The buffer with data and the length is returned to caller using pointers!!
 */
-int get_frame(int convert, uint8_t **buf, size_t *len)
+int get_frame(uint8_t **buf, size_t *len)
 {
     esp_camera_fb_return(fb); //release a possible last used framebuffer. we should work with at least 2 framebuffers!
+
+											   
     fb = esp_camera_fb_get(); // get a new framebuffer with current picture data
     if (!fb)
     {
         ESP_LOGE(TAG,"CamCapture failed");
-        CapErrors++;
         return 0;
     }
     else
@@ -510,18 +491,7 @@ int get_frame(int convert, uint8_t **buf, size_t *len)
         *buf=fb->buf;
         *len=fb->len;
     }
-    if (convert)
-    {
-        //printf("\nstart jpg convert(%u)...\n",*len);
-        if (frame2jpg(fb, 80, buf, len) != 1)
-        {
-            CapErrors++;
-            //printf("jpg-convert failed\n");
-            return 0;
-        }
-        //printf("...convert done(%u)!\n",*len);
 
-    }
     return 1;
 }
 
@@ -629,13 +599,14 @@ static int set_control(char *uri)
     if (ret) return 1; //OK
 
     // its a camera setting command:
-    s = esp_camera_sensor_get(); // get the cameras function list
+    s  = esp_camera_sensor_get(); // get the cameras function list
 
     if (!strcmp(variable, "framesize"))
     {
-        func=(void*)s->set_framesize;
+         func=(void*)s->set_framesize;
         streamspeed=1;
         nightmode=0;
+        JPGerrors=DMAerrors=0; // clear errors after framesize change for better readability
     }
     else if (!strcmp(variable, "quality")) func = s->set_quality;
     else if (!strcmp(variable, "brightness")) func = s->set_brightness;
@@ -678,6 +649,8 @@ static int set_control(char *uri)
     return 1; // OK
 }
 
+
+
 /* get a status info from the server:
 This is a new feature to deliver data to the webpage from the server like current framerate
 entry:
@@ -696,12 +669,13 @@ static int get_status(char *uri)
     strtok(uri, "=&"); //goto first & or = .tell strtok to use string uri. returns: "/getstatus?var"
     variable=strtok(NULL, "=&");// we are now at '='.  from last = find next = or & and put a /0 there. returns: "framerate"
 
+
     ESP_LOGI(TAG, "getstatus: %s", variable);
 
 //check 'variable' for the request parameter
     if (!strcmp(variable, "framerate"))
     {
-        sprintf(iobuf,"NetFPS:%d HwFPS:%d CamErrors:%d",NetFPS,HwFPS,CapErrors);
+        sprintf(iobuf,"- NetFPS:%d CamFPS:%d I2sFPS:%d - QUEerrors:%d JPGerrors:%d - UpTime(hrs):%d - Rssi:%d",NetFPS,HwFPS,I2sFPS,DMAerrors,JPGerrors,(uptime/3600), rssi);
         return 1; //OK, answer in iobuf
     }
 
@@ -720,7 +694,7 @@ returns the requested  data in text form. it uses global iobuf to return the res
 */
 static int get_camstatus(void)
 {
-    sensor_t *s = esp_camera_sensor_get(); // get the status of camera controls from camera
+    sensor_t *s  =  esp_camera_sensor_get(); // get the status of camera controls from camera
     if (s == NULL) return 0;
     char *p = iobuf;
     // assemlbe them into a string
@@ -770,7 +744,7 @@ especially usefull if you have several of such cameras on the net.
 */
 void stream_speed(int full)
 {
-    sensor_t *s = esp_camera_sensor_get(); // get the cameras function list
+    sensor_t *s  =  esp_camera_sensor_get(); // get the cameras function list
 
     if (full) // set full speed=max possible at current setting=default reset setting
     {
@@ -803,7 +777,7 @@ if off: framerate is returned to normal constant state of fe. 25 fps, also in da
 */
 void night_mode(int on)
 {
-    sensor_t *s = esp_camera_sensor_get(); // get the cameras function list
+    sensor_t *s  =  esp_camera_sensor_get(); // get the cameras function list
 
     s->set_reg(s,0x111,0xff, 0x00); // first switch to full speed clock
     vTaskDelay(200/portTICK_PERIOD_MS);
@@ -830,9 +804,18 @@ void night_mode(int on)
 // 1 sec peridic timer
 void timerCallBack( TimerHandle_t xTimer )
 {
+	wifi_ap_record_t ap;
+	
     NetFPS=NetFrameCnt;
     NetFrameCnt=0;
     HwFPS=HwFrameCnt;
     HwFrameCnt=0;
+    I2sFPS=I2sFrameCnt;
+    I2sFrameCnt=0;
+    uptime++;
+	
+
+esp_wifi_sta_get_ap_info(&ap);
+rssi= ap.rssi;
 
 }
