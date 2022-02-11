@@ -113,7 +113,7 @@ Edit options are:
 - edit<num> = enter new ssid/passwd
 - delete<num> = delete entry
 - save = save change to NVS (dont forget this)
-- Quit = exit the dialog and continue bootup with saved credentials.
+- Quit = exit the dialog and continue bootup with current credentials.
 
 
 
