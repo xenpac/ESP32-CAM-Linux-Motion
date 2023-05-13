@@ -1,4 +1,4 @@
-# Camera Webserver ESP32-CAM AI-THINKER Board with LED control Version 2
+# Camera Webserver ESP32-CAM AI-THINKER Board with LED control Version 2 (The IP WebCam ;)
 
 - stable IP-WebCam for linux-motion (OV2640 only)
 - ESP-IDF V4.4 project, C code.
