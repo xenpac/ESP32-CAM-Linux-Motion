@@ -56,7 +56,7 @@ Raising the powersupply voltage to **5.4V** (upto 6 or so volts) gives a much mo
 (my horizontal stripes were gone;)  
 Ie. some moduls work with 5V, some dont, needing 5.4V+  
 
-The **USB-A connector** into the USB-charger also causes problems.
+The **USB-A connector** (for power supply) into the USB-charger also causes problems.
 If it gets dirty there is a remarkable resistance which causes voltage-drops on current-spikes!
 
 The HighPower LED gets very hot!!
